@@ -1,5 +1,6 @@
 import pytesseract
 from PIL import Image
+import subprocess
 import easyocr
 import pyocr
 import pyocr.builders
@@ -8,6 +9,7 @@ import nltk
 import re
 import cv2
 import io
+import os
 from nltk.tokenize import word_tokenize
 from nltk.corpus import stopwords
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -19,14 +21,15 @@ from sklearn.metrics import mutual_info_score
 import language_tool_python
 import argparse
 import torch
+from pathlib import Path
 from pylanguagetool import api
-from transformers import GPT2Tokenizer, GPT2LMHeadModel
-from transformers import LongformerTokenizer, LongformerForMaskedLM
 from skimage.filters import threshold_local
+from eval import grammatical_errors_score, word_count_score, language_model_score, composite_score
 
 parser = argparse.ArgumentParser(description='testing OCR and pytesseract')
 parser.add_argument('--img_path', type=str, required=True, help='Path to the image file')
 parser.add_argument('--lang', type=str, default='ru', help='Language for OCR (default: ru)')
+parser.add_argument('--prep', type=str, default='Y', help='Mode for non-preprocessing')
 args = parser.parse_args()
 
 nltk.download('punkt')
@@ -34,6 +37,22 @@ nltk.download('stopwords')
 nltk.download('words')
 nltk.download('udhr')
 russian_stopwords = set(stopwords.words('russian'))
+
+def get_file_name(file_path):
+	file_name = Path(file_path).name
+	return file_name
+
+def get_new_path(file_path, dir_path):
+	file_name = get_file_name(file_path)
+	os.makedirs(dir_path, exist_ok = True)
+	new_image_path = dir_path + file_name
+	return new_image_path
+
+def apply_grayscale_script(image_path):
+	new_image_path = get_new_path(image_path, "./Cleaned/")
+	subprocess.run(["bash", "textcleaner", "-g", "-e", "normalize", "-f", "25", "-o", "20", "-s", "1", image_path, new_image_path])
+	return new_image_path
+
 
 def complex_preprocess_image(image_path, scale_factor=2):
 	# Read the image in color
@@ -43,62 +62,49 @@ def complex_preprocess_image(image_path, scale_factor=2):
 	gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
 	# Апскейлинг изображения
-	upscaled_gray = cv2.resize(gray, None, fx=scale_factor, fy=scale_factor, interpolation=cv2.INTER_CUBIC)
-	
-	#cv2.imwrite("./upscaled.jpg", upscaled_gray)
+	upscaled_image = cv2.resize(gray, None, fx=scale_factor, fy=scale_factor, interpolation=cv2.INTER_CUBIC)
     	
     	# Enhance contrast
 	clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-	enhanced_gray = clahe.apply(upscaled_gray)
+	enhanced_image = clahe.apply(upscaled_image)
+	
+	new_image_path = get_new_path(image_path, "./Enhanced/")
+	cv2.imwrite(new_image_path, enhanced_image)
+	
+	final_image_path = apply_grayscale_script(new_image_path)
+	
+	final_image = cv2.imread(final_image_path)
 
-	#cv2.imwrite("./enhanced.jpg", enhanced_gray)
+	return final_image
 	
-	# Применение уменьшения шума
-	#denoised_gray = cv2.fastNlMeansDenoising(enhanced_gray, None, 30, 7, 21)
-	
-	#cv2.imwrite("./denoised.jpg", denoised_gray)
-	
-	# Применение сглаживания для уменьшения изрезанности
-	#blurred = cv2.GaussianBlur(denoised_gray, (5, 5), 0)
-	
-	#cv2.imwrite("./blurred.jpg", blurred)
-
-	# Применение адаптивного порогового значения для создания бинарного изображения
-	#_, binary_image = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-	
-	#cv2.imwrite("./binary.jpg", binary_image)
-
-	# Deskewing
-	#coords = np.column_stack(np.where(binary_image > 0))
-	#(h, w) = image.shape[:2]
-	#center = (w // 2, h // 2)
-	#M = cv2.getRotationMatrix2D(center, 0, 1.0)
-	#deskewed_image = cv2.warpAffine(binary_image, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
-	
-	#cv2.imwrite("./final.jpg", deskewed_image)
-
-	return enhanced_gray
+def no_preprocess_image(image_path):
+	image = cv2.imread(image_path)
+	return image
 	
 def simple_preprocess_image(image_path, name):
-    image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
-    image = cv2.equalizeHist(image)
-    image = cv2.medianBlur(image, 3)
-    _, image = cv2.threshold(image, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    cv2.imwrite("./" + name + ".jpg", image)
-    return image
+	image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+	image = cv2.equalizeHist(image)
+	image = cv2.medianBlur(image, 3)
+	_, image = cv2.threshold(image, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+	cv2.imwrite("./" + name + ".jpg", image)
+	return image
 
 # OCR Function
-def read_text_from_image(image_path, ocr_tool='pytesseract', lang='rus'):
+def read_text_from_image(image_path, prep, ocr_tool='pytesseract', lang='rus'):
 	text = ""
+	desk_img = ""
 
-	if ocr_tool == 'pytesseract':
+	if prep == 'Y':	
 		desk_img = complex_preprocess_image(image_path)
+	else:
+		desk_img = no_preprocess_image(image_path)
+	
+	if ocr_tool == 'pytesseract':
 		img = Image.fromarray(desk_img)
 		text = pytesseract.image_to_string(img, lang=lang)
 
 	elif ocr_tool == 'easyocr':
 		reader = easyocr.Reader([lang])
-		desk_img = complex_preprocess_image(image_path)
 		img = Image.fromarray(desk_img)
 		img_byte_arr = io.BytesIO()
 		img.save(img_byte_arr, format='jpeg')
@@ -111,7 +117,6 @@ def read_text_from_image(image_path, ocr_tool='pytesseract', lang='rus'):
 		if len(tools) == 0:
 			raise RuntimeError("No OCR tool found")
 		tool = tools[0]
-		desk_img = complex_preprocess_image(image_path)
 		img = Image.fromarray(desk_img)
 		text = tool.image_to_string(img, lang=lang, builder=pyocr.builders.TextBuilder())
 
@@ -143,67 +148,6 @@ def preprocess_text(text):
 	text = text.strip()
 	tokens = [word for word in word_tokenize(text, language='russian') if word not in russian_stopwords]
 	return ' '.join(tokens)
-	
-# Function to calculate grammatical errors score using LanguageTool
-def grammatical_errors_score(text):
-	matches = api.check(text, api_url='https://languagetool.org/api/v2/', lang = 'ru-RU')
-	return len(matches['matches'])
-	
-def word_count_score(text):
-	return len(text.split(' '))
-	
-def language_model_score(text):
-	model_name = 'allenai/longformer-base-4096'
-	model = LongformerForMaskedLM.from_pretrained(model_name)
-	tokenizer = LongformerTokenizer.from_pretrained(model_name)
-	
-	# Токенизация текста
-	tokens = tokenizer.encode(text, return_tensors='pt')
-	max_length = 4096
-	num_chunks = tokens.size(1) // max_length + 1
-	
-	total_loss = 0
-	count = 0
-	
-	for i in range(num_chunks):
-		start = i * max_length
-		end = min((i + 1) * max_length, tokens.size(1))
-		chunk = tokens[:, start:end]
-		
-		# Создание входных данных для модели
-		inputs = tokenizer.decode(chunk[0], skip_special_tokens=True, clean_up_tokenization_spaces=True)
-		inputs = tokenizer(inputs, return_tensors='pt')
-		
-		# Предсказание вероятностей и вычисление loss
-		with torch.no_grad():
-			outputs = model(**inputs, labels=inputs['input_ids'])
-			loss = outputs.loss
-		total_loss += loss.item()
-		count += 1
-	
-	# Вычисление perplexity
-	perplexity = torch.exp(torch.tensor(total_loss / count)).item()
-	return perplexity
-	
-
-def composite_score(text):
-	weights = {'recognized': 1, 'perplexity': 1, 'errors': 1}
-	word_count = word_count_score(text)
-	perplexity = language_model_score(text)
-	errors = grammatical_errors_score(text)
-	
-	#print("----------------------------")
-	#print("word count ", word_count)
-	#print("perplexity ",perplexity)
-	#print("errors ",errors)
-	#print("----------------------------")
-	
-	# Combine scores with weights
-	score = (weights['recognized'] * word_count * (1 / perplexity) -  
-			 weights['errors'] * errors)
-	
-	return score
-
 
 # Comprehensive function for comparison
 def compare_texts(text1, text2, text3):
@@ -217,7 +161,7 @@ def compare_texts(text1, text2, text3):
 	
 	results['Word Count'] = [word_count_score(text) for text in texts]
 	
-	results['Composite Score'] = [composite_score(text) for text in texts]
+	results['Composite Score'] = [composite_score(text)[0] for text in texts]
 	
 	return results
 	
@@ -236,6 +180,8 @@ def main():
 	# Main comparison code
 	image_path = args.img_path
 	lang = args.lang
+	prep = args.prep
+	image_name = get_file_name(image_path)
 
 	# Считываем текст с помощью разных OCR инструментов
 	ocr_tools = ['pytesseract', 'easyocr', 'pyocr']
@@ -249,31 +195,44 @@ def main():
 				language = 'ru'
 			case 'pyocr':
 				language = 'rus'
-		texts.update({tool: preprocess_text(read_text_from_image(image_path, tool, language))})
-
-	# Выводим распознанный текст каждого OCR-инструмента
-	#for tool, text in texts.items():
-	#    print(f"\nРаспознанный текст ({tool}):\n{text}\n")
+		texts.update({tool: preprocess_text(read_text_from_image(image_path, prep, tool, language))})
 
 	# Сравниваем результаты по метрике
 	results = compare_texts(texts['pytesseract'], texts['easyocr'], texts['pyocr'])
-	composite = results['Composite Score']
+	composite = results['Composite Score'][0]
 	word = results['Word Count']
 	perplexity = results['Language Model Perplexity']
 	errors = results['Grammatical Errors']
 
-	with open('pytesseract.txt', 'a') as f:
+	if prep == 'Y':
+		with open('pytesseract.csv', 'a') as f:
 			f.write(str(composite[0]) + "," + str(word[0]) + "," + str(perplexity[0]) + "," + str(errors[0]) + "\n")
-	#    	f.write("\n" + texts['pytesseract'] + "\n")
+			#f.write(image_name + "\n")
+			#f.write(texts['pytesseract'] + "\n")
 	
-	with open('easyocr.txt', 'a') as f:
+		with open('easyocr.csv', 'a') as f:
 			f.write(str(composite[1]) + "," + str(word[1]) + "," + str(perplexity[1]) + "," + str(errors[1]) + "\n")
-	#    	f.write("\n" + texts['easyocr'] + "\n")
+			#f.write(image_name + "\n")
+			#f.write(texts['easyocr'] + "\n")
 	
-	with open('pyocr.txt', 'a') as f:
-	    	f.write(str(composite[2]) + "," + str(word[2]) + "," + str(perplexity[2]) + "," + str(errors[2]) + "\n")
-	#    	f.write("\n" + texts['pyocr'] + "\n")
-
+		with open('pyocr.csv', 'a') as f:
+	    		f.write(str(composite[2]) + "," + str(word[2]) + "," + str(perplexity[2]) + "," + str(errors[2]) + "\n")
+	    		#f.write(image_name + "\n")
+	    		#f.write(texts['pyocr'] + "\n")
+	else:
+		with open('raw_pytesseract.csv', 'a') as f:
+			f.write(str(composite[0]) + "," + str(word[0]) + "," + str(perplexity[0]) + "," + str(errors[0]) + "\n")
+			#f.write(image_name + "\n")
+			#f.write(texts['pytesseract'] + "\n")
+	
+		with open('raw_easyocr.csv', 'a') as f:
+			f.write(str(composite[1]) + "," + str(word[1]) + "," + str(perplexity[1]) + "," + str(errors[1]) + "\n")
+			#f.write(image_name + "\n")
+			#f.write(texts['easyocr'] + "\n")
+	
+		with open('raw_pyocr.csv', 'a') as f:
+	    		f.write(str(composite[2]) + "," + str(word[2]) + "," + str(perplexity[2]) + "," + str(errors[2]) + "\n")
+		
 
 if __name__ == "__main__":
     main()
