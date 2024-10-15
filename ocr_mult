@@ -1,0 +1,11 @@
+#!/bin/bash
+
+echo "prep: Y/N"
+read prep
+
+files=($(ls ./Testing/ | sort -V))
+
+for file in "${files[@]}";
+do
+python3 ocr.py --img_path ./Testing/$file --prep $prep
+done
