@@ -74,7 +74,6 @@ def rotateAndSaveImage(img_path, angle):
 	return width, height
 
 def searchIterator(img_path, debug=True):
-	# Перебирает все комбинации поворотов и языков
 	results = {}
 	rotated = -1
 	for i in range(4):
@@ -87,7 +86,7 @@ def searchIterator(img_path, debug=True):
 		for lang in ['ru', 'en']:
 			text = getDetectedText(img_path, lang)
 			special_symbols_removed, characters_removed, filtered_text = filterText(text, lang)
-			composite_score_value, word_count, perplexity, errors, invalid_ratio = composite_score(filtered_text, lang)  # Используем новую метрику
+			composite_score_value, word_count, perplexity, errors, invalid_ratio = composite_score(filtered_text, lang)
 			results[(lang, i)] = [composite_score_value, filtered_text, special_symbols_removed, characters_removed, word_count, errors, perplexity, invalid_ratio]
 	rotateAndSaveImage(img_path, 90 + 90 * rotated)
 
@@ -104,8 +103,8 @@ def searchIterator(img_path, debug=True):
 			maximum_score = score
 			maximum_key = key
 	if debug:
-		#imgName = os.path.basename(img_path)
-		#createJsonFile(results, key, imgName, rotated, i)
+		imgName = os.path.basename(img_path)
+		createJsonFile(results, key, imgName, rotated, i)
 		debugInfo(maximum_key, results)
 	return maximum_key, results
 
